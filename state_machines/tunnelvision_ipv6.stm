@@ -35,7 +35,7 @@ state ap_up:
   mon = trafficmonitor();
   mon.interface = ap.ap_interface;
   (* make sure validation_server resolves to target_ip *)
-  mon.validation_server = "https://vvts.surfcloud.nl";
+  mon.validation_server = "https://vvts.surfcloud.nl:8443/";
   (* specify vpn endpoints so that the monitor can detect whether vpn traffic occurs *)
   endpoints = "tcp://ams.nl.eduvpn.org:443;udp://ams.nl.eduvpn.org:443";
   endpoints = concat(endpoints, ";udp://ifi2-vpn.guest.eduvpn.no:1194");
