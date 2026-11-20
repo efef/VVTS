@@ -72,7 +72,7 @@ state vpn_detected:
   print("[i] Sending Router Advertisement...");
 
 state slaac_renew:
-  mon.validation_server = "https://vvts.surfcloud.nl/";
+  mon.validation_server = "https://vvts.surfcloud.nl:8443/";
   mon.detect_attack(vpn_safe, vpn_vuln, mon_err);
 
 state vpn_safe:
