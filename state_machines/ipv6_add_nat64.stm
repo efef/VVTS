@@ -85,7 +85,7 @@ state vpn_detected:
 
 state slaac_renew:
   (* client has received nat64 route announcement *)
-  mon.validation_server = "https://vvts.surfcloud.nl/";
+  mon.validation_server = "https://vvts.surfcloud.nl:8443/";
   mon.detect_attack(vpn_safe, vpn_vuln, mon_err);
 
 state vpn_safe:
