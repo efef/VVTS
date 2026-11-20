@@ -11,6 +11,15 @@ use \VVTS\Interfaces\IUnblockable;
 use \VVTS\Types\DnsTransactionMapEntry;
 
 class DnsMitm extends Subscribable implements IUnblockable {
+    function Signal($szSignal, ...$aArguments) {
+        if ($szSignal === "dns_err") {
+            self::Log("ERROR: %s", isset($aArguments[0]) ? $aArguments[0] : "(no message)");
+        } else {
+            self::Log("signal %s", $szSignal);
+        }
+        return parent::Signal($szSignal, ...$aArguments);
+    }
+
     var $hListeningSocket;
     var $hClientSocket;
     var $szNextDns;
@@ -19,6 +28,46 @@ class DnsMitm extends Subscribable implements IUnblockable {
     var $aOverridesAAAA;
     var $dwBindAddr;
     var $abBindIpv6Addr;
+
+    /* Debug logging. Prints to the console, and also appends to the file named in
+     * the VVTS_DNS_LOG environment variable when set (e.g. VVTS_DNS_LOG=/tmp/vvts-dns.log). */
+    static function Log($szFormat, ...$aArgs) {
+        $szLine = sprintf("[dns %s] ", date("H:i:s")) . vsprintf($szFormat, $aArgs) . "\n";
+        echo $szLine;
+        $szFile = getenv("VVTS_DNS_LOG");
+        if ($szFile !== false && $szFile !== "") {
+            @file_put_contents($szFile, $szLine, FILE_APPEND);
+        }
+    }
+
+    static function LastPhpError() {
+        $aErr = error_get_last();
+        return ($aErr === null) ? "no further detail from php" : $aErr["message"];
+    }
+
+    static function DescribeQuery(&$abBuf) {
+        if (strlen($abBuf) < 12) {
+            return sprintf("short packet (%d bytes)", strlen($abBuf));
+        }
+        $wFlags = (ord($abBuf[2]) << 8) | ord($abBuf[3]);
+        $wQd = (ord($abBuf[4]) << 8) | ord($abBuf[5]);
+        $wAn = (ord($abBuf[6]) << 8) | ord($abBuf[7]);
+        $szName = "?";
+        $szType = "?";
+        if ($wQd > 0) {
+            $dwOffset = 12;
+            $szName = @self::ParseDomainName($abBuf, $dwOffset);
+            if ($dwOffset + 1 < strlen($abBuf)) {
+                $wType = (ord($abBuf[$dwOffset]) << 8) | ord($abBuf[$dwOffset + 1]);
+                $aTypes = [1 => "A", 28 => "AAAA", 5 => "CNAME", 12 => "PTR", 15 => "MX", 16 => "TXT", 33 => "SRV", 65 => "HTTPS", 64 => "SVCB"];
+                $szType = isset($aTypes[$wType]) ? $aTypes[$wType] : strval($wType);
+            }
+        }
+        $aRcodes = [0 => "NOERROR", 1 => "FORMERR", 2 => "SERVFAIL", 3 => "NXDOMAIN", 4 => "NOTIMP", 5 => "REFUSED"];
+        $wRcode = $wFlags & 0xf;
+        return sprintf("id=0x%04x %s %s%s", (ord($abBuf[0]) << 8) | ord($abBuf[1]), $szName, $szType,
+            ($wFlags & 0x8000) ? sprintf(" rcode=%s answers=%d%s", isset($aRcodes[$wRcode]) ? $aRcodes[$wRcode] : $wRcode, $wAn, ($wFlags & 0x0200) ? " TRUNCATED" : "") : "");
+    }
 
     function __construct() {
         parent::__construct();
@@ -177,7 +226,9 @@ class DnsMitm extends Subscribable implements IUnblockable {
                 )
             ) {
                 $this->szNextDns = $aMatch[1];
+                self::Log("upstream DNS server taken from /etc/resolv.conf: %s", $this->szNextDns);
             } else {
+                self::Log("no usable 'nameserver' line in /etc/resolv.conf:\n%s", $szResolvConf === false ? "(unreadable)" : $szResolvConf);
                 $this->Signal("dns_err", "Don't know where to forward DNS packets to");
                 $this->Teardown();
                 return;
@@ -186,13 +237,21 @@ class DnsMitm extends Subscribable implements IUnblockable {
 
         $dwBindAddr = ($this->dwBindAddr === null) ? 0 : $this->dwBindAddr;
         $abBindIpv6Addr = ($this->abBindIpv6Addr === null) ? str_repeat("\x00", 16) : $this->abBindIpv6Addr;
-        $this->hListeningSocket = stream_socket_server("udp://" . MiscNet::DwordToIpv4String($dwBindAddr) . ":53", $dwErrno, $szErrstr, STREAM_SERVER_BIND);
-        $this->hListeningIpv6Socket = stream_socket_server("udp://[" . MiscNet::BinaryToIpv6String($abBindIpv6Addr) . "]:53", $dwErrno, $szErrstr, STREAM_SERVER_BIND);
+        $szBind4 = "udp://" . MiscNet::DwordToIpv4String($dwBindAddr) . ":53";
+        $this->hListeningSocket = @stream_socket_server($szBind4, $dwErrno, $szErrstr, STREAM_SERVER_BIND);
+        self::Log("listen %s: %s", $szBind4, $this->hListeningSocket === false ? "FAILED (errno $dwErrno: $szErrstr)" : "ok");
+        $szBind6 = "udp://[" . MiscNet::BinaryToIpv6String($abBindIpv6Addr) . "]:53";
+        $this->hListeningIpv6Socket = @stream_socket_server($szBind6, $dwErrno, $szErrstr, STREAM_SERVER_BIND);
+        self::Log("listen %s: %s%s", $szBind6, $this->hListeningIpv6Socket === false ? "FAILED (errno $dwErrno: $szErrstr)" : "ok",
+            ($this->abBindIpv6Addr === null) ? " (optional, ignored on failure)" : "");
         if (MiscNet::Ipv4StringToDword($this->szNextDns) !== false) {
-            $this->hClientSocket = stream_socket_client("udp://" . $this->szNextDns . ":53", $dwErrno, $szErrstr);
+            $this->hClientSocket = @stream_socket_client("udp://" . $this->szNextDns . ":53", $dwErrno, $szErrstr);
         } else {
-            $this->hClientSocket = stream_socket_client("udp://[" . $this->szNextDns . "]:53", $dwErrno, $szErrstr);
+            $this->hClientSocket = @stream_socket_client("udp://[" . $this->szNextDns . "]:53", $dwErrno, $szErrstr);
         }
+        self::Log("upstream socket to %s:53: %s", $this->szNextDns, $this->hClientSocket === false ? "FAILED (errno $dwErrno: $szErrstr)" : "ok");
+        foreach ($this->aOverridesA as $szName => $szAddr) { self::Log("override A    %s -> %s", $szName, $szAddr); }
+        foreach ($this->aOverridesAAAA as $szName => $szAddr) { self::Log("override AAAA %s -> %s", $szName, $szAddr); }
 
         if (
             ($this->dwBindAddr !== null && $this->hListeningSocket === false) ||
@@ -210,12 +269,19 @@ class DnsMitm extends Subscribable implements IUnblockable {
     function Onunblock($hSocket) {
         foreach ($this->aTransactionMap as $dwTrid => $oEntry) {
             if ($oEntry->dwExpire < intval(microtime(1) * 1000)) {
+                self::Log("TIMEOUT: no answer from upstream %s within 10s for id=0x%04x (asked by %s)", $this->szNextDns, $dwTrid, $oEntry->szPeer);
                 unset($this->aTransactionMap[$dwTrid]);
             }
         }
 
-        $abBuf = stream_socket_recvfrom($hSocket, 65536, 0, $szPeer);
+        error_clear_last();
+        $abBuf = @stream_socket_recvfrom($hSocket, 65536, 0, $szPeer);
         if ($abBuf === "" || $abBuf === false) {
+            self::Log("receive failed on %s socket (got %s): %s%s",
+                ($hSocket === $this->hClientSocket) ? "upstream" : "listening",
+                ($abBuf === false) ? "false" : "empty packet",
+                self::LastPhpError(),
+                ($hSocket === $this->hClientSocket) ? " -- upstream " . $this->szNextDns . " probably refused the query (ICMP port unreachable)" : "");
             $this->Signal("dns_err", "DNS socket closed");
             $this->Teardown();
             return;
@@ -226,17 +292,27 @@ class DnsMitm extends Subscribable implements IUnblockable {
             // printf("[i] incoming dns request\n");
             $abResponse = $this->GenerateResponse($abBuf, $szPeer);
             if ($abResponse !== null) {
-                stream_socket_sendto($hSocket, $abResponse, 0, $szPeer);
+                self::Log("query from %s: %s -> answered locally (override)", $szPeer, self::DescribeQuery($abBuf));
+                error_clear_last();
+                $res = @stream_socket_sendto($hSocket, $abResponse, 0, $szPeer);
+                if ($res === false || $res < 0) { self::Log("send to client %s failed: %s", $szPeer, self::LastPhpError()); }
             } else {
                 /* forward DNS query */
+                self::Log("query from %s: %s -> forwarding to %s", $szPeer, self::DescribeQuery($abBuf), $this->szNextDns);
+                if (isset($this->aTransactionMap[$wTransactionId])) {
+                    self::Log("WARNING: transaction id 0x%04x already pending; earlier query will lose its answer", $wTransactionId);
+                }
                 $this->aTransactionMap[$wTransactionId] = new DnsTransactionMapEntry($hSocket, $szPeer, intval(microtime(1) * 1000) + 10000);
-                stream_socket_sendto($this->hClientSocket, $abBuf, 0, $this->szNextDns . ":53");
+                error_clear_last();
+                $res = @stream_socket_sendto($this->hClientSocket, $abBuf, 0, $this->szNextDns . ":53");
+                if ($res === false || $res < 0) { self::Log("send to upstream %s failed: %s", $this->szNextDns, self::LastPhpError()); }
             }
         } else {
             // printf("[i] incoming dns response\n");
             if (!isset($this->aTransactionMap[$wTransactionId])) {
-                printf("[-] incoming DNS response with unknown source\n");
+                self::Log("response from upstream with unknown id: %s (late, duplicate, or already timed out)", self::DescribeQuery($abBuf));
             } else {
+                self::Log("response from upstream: %s -> to %s", self::DescribeQuery($abBuf), $this->aTransactionMap[$wTransactionId]->szPeer);
                 stream_socket_sendto($this->aTransactionMap[$wTransactionId]->hSocket, $abBuf, 0, $this->aTransactionMap[$wTransactionId]->szPeer);
                 unset($this->aTransactionMap[$wTransactionId]);
             }
