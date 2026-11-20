@@ -63,7 +63,7 @@ state vpn_detected:
 
 state dhcp_renew:
   (* make sure validation_server resolves to target_ip *)
-  mon.validation_server = "https://vvts.surfcloud.nl/";
+  mon.validation_server = "https://vvts.surfcloud.nl:8443/";
   mon.detect_attack(vpn_safe, vpn_vuln, mon_err);
 
 state mon_err:
