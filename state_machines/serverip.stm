@@ -18,7 +18,7 @@ state init begin:
   miscnet.masquerade("true");
   (* blanket redirect all traffic destined for our target to the vpn endpoint *)
   miscnet.set_redirect("vvts.surfcloud.nl", "ams.nl.eduvpn.org"); (* wireguard endpoint *)
-  (* miscnet.set_redirect("vvts.midnightblue.nl", "eduvpn.uran.ua"); *) (* openvpn endpoint *)
+  (* miscnet.set_redirect("vvts.surfcloud.nl", "eduvpn.uran.ua"); *) (* openvpn endpoint *)
   (* make an exception for the vvts server component, which shouldn't be redirected to the vpn endpoint *)
   miscnet.no_redirect("tcp://vvts.surfcloud.nl:8443");
 
