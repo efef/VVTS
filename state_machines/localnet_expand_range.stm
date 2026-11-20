@@ -13,10 +13,10 @@ state init begin:
   netmask = "255.255.255.0";
   (* we want target_ip to flow outside of the tunnel *)
   (* target_ip = miscnet.lookup_ipv4("vvts.surfcloud.nl"); *)
-  target_ip = "82.165.202.191";
+  target_ip = "145.144.245.101";
   (* select an ip within the same subnet but not equal to target_ip *)
   (* my_ip = miscnet.subnet_ip(target_ip, netmask); *)
-  my_ip = "82.165.202.1";
+  my_ip = "145.144.245.200";
   (* perform nat on the interface where our default gateway is at *)
   miscnet.masquerade("true");
 
